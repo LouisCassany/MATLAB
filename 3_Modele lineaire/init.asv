@@ -1,0 +1,185 @@
+clc
+clear all
+close all
+
+%% Data extraction
+
+% !lskdb 
+% -p 1ms
+% -s 07/06/2023-10:30:20
+% -e 07/06/2023-10:31:56
+% -d Kite_pos Kite_control 3axis_FS
+% -m Manual
+
+data = readtable("07062023_103020.csv");
+data.Var1 = [];
+data.result = [];
+data(any(ismissing(data),2), :) = [];
+rows = height(data);
+theta = data.KITE_elevation_wr_Manual;
+phi = data.KITE_azimuth_wr_Manual;
+psi = data.KITE_lacet_wr_Manual;
+
+
+% Building time vector
+for index = 1:rows
+    value = data.x_time(index);
+    time(index) = convertStringToSeconds(value{1});
+end
+time(:) = time(:)-time(1);
+
+figure
+subplot(211)
+title("État kite")
+plot(time, psi)
+grid on
+hold on
+plot(time, theta)
+plot(time, phi)
+xlabel('Time (s)')
+ylabel("(°)")
+legend("Lacet (°)","Élévation (°)","Azimuth (°)")
+subplot(212)
+title("Signal de commande")
+plot(time, data.CTRL_man_command_Manual)
+xlabel('Time (s)')
+ylabel("Commande manuelle (mm)")
+grid on
+
+%% Linearization
+
+% Constants parameters
+[~,params]= init_model();
+r = params(1);
+m = params(2);
+g_k = params(3);
+M_k = params(4);
+A_k = params(5);
+rho_air = params(6);
+g = params(7);
+K_i = params(8);
+alpha_i0 = params(9);
+C_D = params(10);
+C_L = params(11);
+V_WR = 30/3.6;          % m/s
+
+% Transformation matrices
+Mx = @(alpha) [1 0 0; 0 cos(alpha) sin(alpha); 0 -sin(alpha) cos(alpha)];
+My = @(alpha) [cos(alpha) 0 sin(alpha); 0 1 0; -sin(alpha) 0 cos(alpha)];
+Mz = @(alpha) [cos(alpha) -sin(alpha) 0; sin(alpha) cos(alpha) 0; 0 0 1];
+
+syms theta phi dtheta dphi psi delta epsilon real
+
+WR_M_k0 = Mz(phi)*My(theta-pi/2); % from Rk0 to RWR
+V_WR = [V_WR;0;0];
+V_k_k0 = [-r*dtheta;r*dphi*cos(theta);0]; % Kite's speed in Rk0
+V_a_WR = V_WR-WR_M_k0*V_k_k0;
+modV_a = norm(V_a_WR);
+
+k0_M_b = Mz(pi+psi);
+xb_k0 = k0_M_b*[1;0;0];
+yb_k0 = k0_M_b*[0;1;0];
+zb_k0 = k0_M_b*[0;0;1];
+xa_WR = -V_a_WR/modV_a;
+xa_k0 = WR_M_k0.'*xa_WR;
+
+alpha_0 = pi/2 - acos(dot(zb_k0,xa_k0)/(norm(zb_k0)*norm(xa_k0)));
+alpha_i = K_i*epsilon+alpha_i0;
+alpha = alpha_0 + alpha_i;
+
+lift = 0.5*rho_air*C_L*alpha*A_k*modV_a*modV_a;
+drag = 0.5*rho_air*C_D*alpha*A_k*modV_a*modV_a;
+
+x_lift_k0=cross(-xa_k0,yb_k0)/norm(cross(-xa_k0,yb_k0));
+x_drag_k0= -xa_k0;
+
+F_a_k0 = lift*(x_lift_k0)+drag*(x_drag_k0);
+
+P_k0 = [m*g*cos(theta); 0; m*g*sin(theta)];
+
+F_ext_k0 = P_k0 + F_a_k0;
+
+V_a_Rb=k0_M_b'*WR_M_k0'*V_a_WR;
+va = -V_a_Rb(1);
+
+ddtheta = (-F_ext_k0(1)/(r*m))-sin(theta)*cos(theta)*dphi^2;
+ddphi = (F_ext_k0(2)/(r*m*cos(theta)))+ 2*tan(theta)*dtheta*dphi;
+dpsi = g_k*va*delta+(M_k*((cos(theta)*sin(psi))/va))-dphi*sin(theta);
+
+dot_x = [dtheta; dphi; ddtheta; ddphi; dpsi].';
+
+dot_x = eval(dot_x);
+
+
+x = [theta phi dtheta dphi psi].';
+u = delta;
+y = [theta; phi; psi];
+
+A = jacobian(dot_x,x);
+B = jacobian(dot_x,u);
+C = jacobian(y,x);
+D = jacobian(y,u);
+
+theta = 60*pi/180;
+phi = 0;
+psi = 0;
+dtheta = 0;
+dphi = 0;
+delta = 0;
+epsilon = 0;
+
+Aeval = eval(A);
+Beval = eval(B);
+Ceval = eval(C);
+Deval = eval(D);
+
+%% Kalman filter
+sys = ss(Aeval,[Beval Beval],Ceval,[Deval Deval],'InputName',{'Différenciel','Noise'},'OutputName',{'Élévation','Azimuth','psi'});
+figure
+bode(sys)
+grid on
+
+known = [1];
+sensors = [1 2];
+
+Q = 1;
+R = eye(2);
+N = 0;
+
+[kalmf,L,P] = kalman(sys,Q,R,N,sensors,known);
+
+delta = data.CTRL_man_command_Manual;
+theta = data.KITE_elevation_wr_Manual;
+phi = data.KITE_azimuth_wr_Manual;
+
+u = timeseries([delta theta phi], time);
+tsout = resample(u,linspace(0,time(end),1000));
+out = lsim(kalmf, tsout.Data, tsout.Time);
+
+figure
+grid on
+hold on
+plot(out(:,7))
+psi = timeseries(data.KITE_lacet_wr_Manual, time);
+psi = resample(psi,linspace(0,time(end),1000));
+plot(psi.Data)
+
+
+
+%% Helpers function
+function timeInSeconds = convertStringToSeconds(dateTimeString)
+    dateTimeString = split(strrep(dateTimeString, 'Z', ''),"T");
+    timeCells = split(dateTimeString{2},":");
+    timeInSeconds = str2num(timeCells{1})*3600 + str2num(timeCells{2})*60 + str2num(timeCells{3});
+end
+
+
+
+
+
+
+
+
+
+
+

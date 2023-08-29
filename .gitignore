@@ -1,0 +1,7 @@
+.tmp.drivedownload
+.tmp.driveupload
+
+LEGACY
+slprj
+
+LAB/**/*.csv
