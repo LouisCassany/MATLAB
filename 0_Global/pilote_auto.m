@@ -6,12 +6,13 @@ function [control_signal, alpha, alpha_des, target_index, next_target_index, err
 
 % Compute a current and desired orientation for the kite.
 %
-% [control_signal, alpha, alpha_des, new_target_index, error] = PILOTE_AUTO(theta_T0, phi_T0, n, a, Omega_T0, d0, P, r, last_target_index, theta, phi, psi)
+% [control_signal, alpha, alpha_des, target_index, next_target_index, error] = PILOTE_AUTO(theta_T0, phi_T0, n, a, Omega_T0, d0, P, r, last_target_index, theta, phi, psi)
 %
 % control_signal    : differential control (mm)
 % alpha             : current orientation (rad)
 % alpha_des         : desired orientation (rad)
-% new_target_index  : current tracking point index
+% target_index      : target point index
+% next_target_index : next target point index
 % error             : Approx kite distance from the trajectory (m)
 % ------------------------------------------------------------------
 % theta_T0          : elevation of the trajectory center (rad)
